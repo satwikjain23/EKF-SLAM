@@ -1,0 +1,10 @@
+<launch>
+    
+    
+    <group ns="rand">
+        <node pkg="race" type="rand.py" name="rand" />
+    </group>
+    <group ns="cones_control">
+        <node pkg="race" type="cones_control.py" name="pid_controller" />
+    </group>
+</launch>
