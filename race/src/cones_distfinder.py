@@ -6,7 +6,7 @@ from sensor_msgs.msg import LaserScan
 from geometry_msgs.msg import PoseStamped
 from race.msg import slam
 from tf.transformations import euler_from_quaternion, quaternion_from_euler
-
+from race.msg import final_coordinates
 from race.msg import pid_input
 
 
@@ -15,14 +15,14 @@ forward_projection = 0.5  #0.5
 vel = 15 		
 error = 0.0		
 car_length = 0.50 
-
+b=True
 
 #leftcone=[[-2.3,0],[-2.4,4],[-2.3,7.9],[-2.3,11.9],[-2.3,15.6],[-2.3,19.8],[-2.3,23.8],[-2.3,27.8],[-2.3,32.1],[-2.3,37.1],[-1,43.3],[7.5,44.4],[14.2,45],[20,41.3],[20.7,35],[20.7,29.9],[20.9,24.6],[20.7,20],[20.9,15.9],[20.6,12.2],[20.9,7.7],[20.8,4],[20.8,1],[20.47,-2.65],[19.5,-5.4],[13.7,-6.4],[9.4,-6.3],[5.6,-6.2],[1.9,-6.2],[-2.3,-4.2]]
 #rightcone=[[2.3,0],[1.9,4.1],[2.1,7.8],[2.1,12.1],[2.1,15.7],[2.1,19.6],[1.9,23.7],[2.3,27.5],[2.3,32],[2.2,36.2],[3,40],[7.9,40.4],[13.5,40.4],[15.3,37.2],[16.9,34.9],[16.1,29.5],[16.2,24.2],[15.9,20],[16,15.6],[16,11.7],[16.1,7.5],[16.1,4],[15.8,0.7],[16,-2.5],[16,-2.5],[13.8,-2.7],[9.1,-2.8],[5,-2.8],[2.1,-2.7],[2.1,-2.7]]
 
 leftcone=[]
 rightcone=[]
-
+car_coordinate=[0,0]
 
 pub = rospy.Publisher('/err', pid_input, queue_size=10)
 
@@ -35,13 +35,20 @@ def call(data):
 
 	
 sum=0
+def c(data):
+	global car_coordinate 
+	car_coordinate[0]=data.x
+	car_coordinate[1]=data.y
+
 def callback(data):
 	global car_coordinate
-	car_coordinate=[0,0]
+	if(b):
+		car_coordinate[0]=data.pose.position.x
+		car_coordinate[1]=data.pose.position.y
+
 	
-	car_coordinate[0]=data.pose.position.x
-	car_coordinate[1]=data.pose.position.y
-	car_coordinate=tuple(car_coordinate)
+	
+	# car_coordinate=tuple(car_coordinate)
 	global roll, pitch, yaw
 	orientation_q = data.pose.orientation
 	orientation_list = [orientation_q.x, orientation_q.y, orientation_q.z, orientation_q.w]
@@ -157,4 +164,5 @@ if __name__ == '__main__':
 	rospy.init_node('dist_finder',anonymous = True)
 	rospy.Subscriber("/gt_pose",PoseStamped, callback)
 	rospy.Subscriber("/slam_to_distfinder",slam,call)
+	rospy.Subscriber("/final_coordinates",final_coordinates, c)
 	rospy.spin()

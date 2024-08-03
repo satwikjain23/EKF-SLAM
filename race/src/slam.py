@@ -5,29 +5,35 @@ import numpy as np
 from race.msg import perception
 from race.msg import slam
 from std_msgs.msg import Float32MultiArray
-
+from race.msg import final_coordinates
 from geometry_msgs.msg import PoseStamped
 
 left_cone_coordinates=[]
 right_cone_coordinates=[]
 
+b=True
 
 
-
+car_coordinate=[0,0]
+min_distance=10000
+min_left_coordinate=[-1,-1]
+min_right_coordinate=[-1,-1]
 pub = rospy.Publisher('/slam_to_distfinder', slam, queue_size=10)
 
 def distance(x,y):
 	d=math.sqrt(((x[0]-y[0])**2)+((x[1]-y[1])**2))
 	return d
-
+def c(data):
+    global car_coordinate 
+    car_coordinate[0]=data.x
+    car_coordinate[1]=data.y
 def call(data):
-	global car_coordinate 
-	car_coordinate=[0,0]
-	car_coordinate[0]=data.pose.position.x
-	car_coordinate[1]=data.pose.position.y
-min_distance=10000
-min_left_coordinate=[-1,-1]
-min_right_coordinate=[-1,-1]
+	global car_coordinate,b
+	if(b):
+		car_coordinate[0]=data.pose.position.x
+		car_coordinate[1]=data.pose.position.y
+		b=False
+
 def callback(data):
 	global min_distance
 	global min_left_coordinate
@@ -112,4 +118,5 @@ if __name__ == '__main__':
 	rospy.init_node('slam',anonymous = True)
 	rospy.Subscriber("/perception_to_slam",perception,callback)
 	rospy.Subscriber("/gt_pose",PoseStamped, call)
+	rospy.Subscriber("/final_coordinates",final_coordinates, c)
 	rospy.spin()

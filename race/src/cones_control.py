@@ -28,9 +28,7 @@ prevsteer=0
 steer=0
 
 
-def call(data):
-	global steer
-	steer=data.drive.steering_angle
+
 
 def control(data: pid_input):
 	global prev_error, steer
@@ -112,6 +110,5 @@ if __name__ == '__main__':
 	rospy.init_node('pid_controller', anonymous=True)
 	print("PID Control Node is Listening to error")
 	rospy.Subscriber("/gt_pose",PoseStamped, callback)
-	rospy.Subscriber("/rand_drive",AckermannDriveStamped, call)
 	rospy.Subscriber("/err", pid_input, control)
 	rospy.spin()
