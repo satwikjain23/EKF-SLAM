@@ -26,7 +26,7 @@ car_coordinate=[0,0]
 
 pub = rospy.Publisher('/err', pid_input, queue_size=10)
 
-def call(data):
+def fall(data):
 	print(data)
 	l=data.leftcone
 	r=data.rightcone
@@ -35,18 +35,22 @@ def call(data):
 
 	
 sum=0
-def c(data):
+def d(data):
 	global car_coordinate 
 	car_coordinate[0]=data.x
 	car_coordinate[1]=data.y
 
 def callback(data):
-	global car_coordinate
+	global car_coordinate,b
 	if(b):
 		car_coordinate[0]=data.pose.position.x
 		car_coordinate[1]=data.pose.position.y
+		b=False
 
-	
+	#-------------------------------------EXTRA---------------------------
+	car_coordinate[0]=data.pose.position.x
+	car_coordinate[1]=data.pose.position.y
+	#-------------------------------------EXTRA---------------------------
 	
 	# car_coordinate=tuple(car_coordinate)
 	global roll, pitch, yaw
@@ -160,9 +164,9 @@ def callback(data):
 	
 if __name__ == '__main__':
 	c=0
-	print("Hokuyo LIDAR node started")
+	print("Hokuyo LIDAR node started") 
 	rospy.init_node('dist_finder',anonymous = True)
 	rospy.Subscriber("/gt_pose",PoseStamped, callback)
-	rospy.Subscriber("/slam_to_distfinder",slam,call)
-	rospy.Subscriber("/final_coordinates",final_coordinates, c)
+	rospy.Subscriber("/slam_to_distfinder",slam,fall)
+	# rospy.Subscriber("/final_coordinates",final_coordinates, d)
 	rospy.spin()
