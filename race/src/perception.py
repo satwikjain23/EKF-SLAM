@@ -6,10 +6,14 @@ from race.msg import perception
 from race.msg import perception2
 from geometry_msgs.msg import PoseStamped
 from tf.transformations import euler_from_quaternion, quaternion_from_euler
+from race.msg import final_coordinates
 
-coordinates=[]
-
-pub = rospy.Publisher('/perception_to_slam', perception, queue_size=10000)
+car_coordinate=[0,0]
+g=[0,0]
+yaw=0
+b=True
+car=[0,0]
+pub = rospy.Publisher('/perception_to_slam', perception, queue_size=1)
 def final_cone_coodinate(i):
 	angle=(i[2]*0.33)-180
 	#print("Angle=",angle)
@@ -23,8 +27,13 @@ def final_cone_coodinate(i):
 
 
 def call(data):
-	global car_coordinate 
-	car_coordinate=[0,0]
+	global car_coordinate,yaw,b,car
+	car[0]=data.pose.position.x
+	car[1]=data.pose.position.y
+	if(b):
+		car_coordinate[0]=data.pose.position.x
+		car_coordinate[1]=data.pose.position.y
+		b=False
 	car_coordinate[0]=data.pose.position.x
 	car_coordinate[1]=data.pose.position.y
 
@@ -33,7 +42,10 @@ def call(data):
 	orientation_list = [orientation_q.x, orientation_q.y, orientation_q.z, orientation_q.w]
 	(roll, pitch, yaw) = euler_from_quaternion (orientation_list)
 	
-	
+def poll(data):
+	global car_coordinate,g
+	car_coordinate[0]=data.x
+	car_coordinate[1]=data.y
 	
 
 def cone_confirmation(data,cones):
@@ -54,11 +66,9 @@ def cone_confirmation(data,cones):
 	return final
     
 
-	
-
-
-
 def callback(data):
+	global car_coordinate,g,car
+	#length of data.ranges is 1080, lidar gives 360 deg view
 	cones=[]
 	prev=0
 	arr=[]
@@ -85,6 +95,8 @@ def callback(data):
 		#print("prev=",prev)
 	#print(cones)
 	s=cone_confirmation(data,cones)
+	print("car ",car)
+	print("real",car_coordinate)
 	print(s)
 	flattened_matrix = [val for sublist in s for val in sublist]
 	#print(flattened_matrix)
@@ -96,7 +108,8 @@ def callback(data):
 if __name__ == '__main__':
 	c=0
 	print("PERCEPTION")
-	rospy.init_node('2d_perception',anonymous = True)
+	rospy.init_node('perception',anonymous = True)
 	rospy.Subscriber("/scan",LaserScan,callback)
 	rospy.Subscriber("/gt_pose",PoseStamped, call)
+	# rospy.Subscriber("/final_coordinates",final_coordinates, poll)
 	rospy.spin()
