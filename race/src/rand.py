@@ -12,9 +12,12 @@ from geometry_msgs.msg import PoseStamped
 from numpy.linalg import LinAlgError 
 from race.msg import final_coordinates
 from tf.transformations import euler_from_quaternion, quaternion_from_euler
+from race.msg import covariance
 
 
 pub = rospy.Publisher('/final_coordinates', final_coordinates, queue_size=100)
+cov_pub = rospy.Publisher('/covariance_ellipse', covariance, queue_size=1)
+
 
 STATE_SIZE = 3  # State size [x,y,yaw]
 prev_m=0
@@ -24,7 +27,7 @@ delta_t=0
 bt=True
 cones=[]
 global landmark_indexes
-landmark_indexes= 37
+landmark_indexes=37
 landmarks=[]
 num_landmarks=0
 prev_yaw=[0]
@@ -39,10 +42,13 @@ steer=0
 p=False
 o=True
 xEst = np.zeros((STATE_SIZE, 1))
+H_f=0
+sigma=[]
+difference_f=0
 
-PEst = 1e-30 * np.full((3 + 2 * landmark_indexes, 3 + 2 * landmark_indexes), 1)
+PEst = 1e-15 * np.full((3 + 2 * landmark_indexes, 3 + 2 * landmark_indexes), 1)
 for i in range(3, 3 + 2 * landmark_indexes):
-    PEst[i][i] = 1e-15                   #-1
+    PEst[i][i] = 4              # 1e-15                   #-1
 
 difference_f=0
 H_f = np.zeros((3, 3 + 2 * landmark_indexes))
@@ -60,16 +66,18 @@ def ekf_slam():
     :param z:    measurements at this step
     :returns:    the next estimated position and associated covariance
     """
+
     global xEst,PEst,z
     #print("hello")
     # Predict
     predict()
     
     # Update
-    
+    ###print("z",z)
     for measurement in z:
+        print("===============")
         #H_f,Psi_f,difference_f,K=data_association(xEst,PEst,measurement,z)
-        temp_dataassociation(measurement)
+        data_association(measurement)
     
    
     msg=final_coordinates()
@@ -94,18 +102,21 @@ def predict():
     :param PEst: nxn covariance matrix
     :param u:    2x1 control vector
     """
-    global xEst,PEst,delta_t, landmark_indexes
-    '''
-    print("starting")
-    print(xEst)
-    print(PEst)
-    '''
+    global xEst,PEst,delta_t, landmark_indexes,sigma
+    
+    # print("starting")
+    # print(xEst)
+
+    #print(PEst)
+    
     print("------------------------------------------------------------------------")
+    # print("before",xEst)
+    # print(PEst)
     theta=u[1]+xEst[2][0]
     xEst[2][0]=theta
     x=xEst[0][0]+u[0]*np.cos(xEst[2][0])*delta_t
     y=xEst[1][0]+u[0]*np.sin(xEst[2][0])*delta_t
-    #x=xEst[0][0]+0.2*np.cos(xEst[2][0])
+    # x=xEst[0][0]+0.2*np.cos(xEst[2][0])
     #y=xEst[1][0]+0.2*np.sin(xEst[2][0])
     '''
     if (theta > np.pi):
@@ -116,6 +127,7 @@ def predict():
     '''
     xEst[0][0]=x
     xEst[1][0]=y
+    # print("after",xEst)
     
 
     G = np.identity(3 + 2 * (landmark_indexes))
@@ -125,9 +137,9 @@ def predict():
     #G[1][2] = 0.2 * np.cos(xEst[2][0])
 
     sigma=np.dot(np.dot(G,PEst),(np.transpose(G)))
-    PEst=sigma
+    # PEst=sigma
     
-    
+    #print(PEst)
     # print("---------------------------------------")
     # print("before")
     # print(xEst)
@@ -141,27 +153,36 @@ def predict():
    
 
 
-def data_association(xEst,PEst,measurement,z):
+def data_association(measurement):
+    # print("landmarks",landmarks)
+    global  car_coordinate, xEst, PEst,Q,Psi_f,difference_f,H_f,sigma
     # measurement=[x,y,range,bearing]
-
+    ###print("measurement=",measurement)
     # Get current robot state, measurement
-    x_t=xEst[0]
-    y_t=xEst[1]
-    theta_t=xEst[2]
+    x_t=xEst[0][0]
+    y_t=xEst[1][0]
+    theta_t=xEst[2][0]
     range_t=measurement[2]
     bearing_t=measurement[3]
-
-
+    
     landmark_expected_x=measurement[0]
     landmark_expected_y=measurement[1]
-
+    
+    msg=covariance()
+    total=[]
+    
     min_distance = 1e16
-
-    for i in range(1,landmark_indexes+1):
-
+    count=0
+    c=3
+    ###print("landmarks=",landmarks)
+    for i in landmarks:
+        count+=1
         # Get current landmark estimate
-        x_l=xEst[2*i+1]
-        y_l= xEst[2*i+2]
+        # x_l=x_t+ range_t*math.cos(bearing_t)                #car_coordinate[0]+ range_t*math.cos(bearing_t)
+        # y_l=y_t+ range_t*math.sin(bearing_t)                #car_coordinate[1]+ range_t*math.sin(bearing_t)
+        x_l=i[0]
+        y_l=i[1]
+
         delta_x = abs(x_l - x_t)
         delta_y = abs(y_l - y_t)
         q = delta_x ** 2 + delta_y ** 2
@@ -185,88 +206,40 @@ def data_association(xEst,PEst,measurement,z):
         F_x[0][0] = 1.0
         F_x[1][1] = 1.0
         F_x[2][2] = 1.0
-        F_x[3][2 * i + 1] = 1.0
-        F_x[4][2 * i + 2] = 1.0
+        F_x[3][2 * count + 1] = 1.0
+        F_x[4][2 * count + 2] = 1.0
         H_1 = np.array([-delta_x/np.sqrt(q), -delta_y/np.sqrt(q), 0, delta_x/np.sqrt(q), delta_y/np.sqrt(q)])
         H_2 = np.array([delta_y/q, -delta_x/q, -1, -delta_y/q, delta_x/q])
         H_3 = np.array([0, 0, 0, 0, 0])
         H = np.array([H_1, H_2, H_3]).dot(F_x)
 
         # Compute Mahalanobis distance
-        Psi = H.dot(PEst).dot(H.T)
-        difference = np.array([range_t - range_expected, bearing_t - bearing_expected, 0])
+        Psi = np.dot(np.dot(H,sigma),np.transpose(H))+ Q
+        # Psi += np.eye(Psi.shape[0]) * 1e-6
+        # difference =  np.array([range_t-range_expected,bearing_t-bearing_expected,0])
+        difference = np.array([range_expected-range_t,bearing_expected-bearing_t, 0])
         Pi = difference.T.dot(np.linalg.inv(Psi)).dot(difference)
-
+        ###print("pi=",Pi)
+        total.append(i[0])
+        total.append(i[1])
+        ###print("PEst[c][c]",PEst[c][c])
+        ###print("PEst[c+1][c+1]",PEst[c+1][c+1])
+        total.append(math.sqrt(PEst[c][c]))
+        total.append(math.sqrt(PEst[c+1][c+1]))
+        c+=2
+      
         # Get landmark information with least distance
         if Pi < min_distance:
+            ###print("final=",i)
             min_distance = Pi
             # Values for measurement update
             H_f = H
             Psi_f = Psi
             difference_f = difference
-        
-        return H_f,Psi_f,difference_f
-def temp_dataassociation(measurement):
-    global landmarks,num_landmarks, landmark_indexes, PEst, Psi_f, difference_f, H_f, Q
-    min=10
-    j=0
-    index=0
-    for i in landmarks:
-        dist=math.sqrt(((abs(i[1]-measurement[1]))**2) + ((abs(i[0]-measurement[0]))**2))
-        if(dist<min):
-            min=dist
-            index=j
-        j=j+1
-    #print(landmarks[index])
-    if ((index==0 and min>1.2) or (min>1)):
-        #print("not stored")
-        return
-    x_t=xEst[0][0]
-    y_t=xEst[1][0]
-    theta_t=xEst[2][0]
-    range_t=measurement[2]
-    bearing_t=measurement[3]
 
-    min_distance = 1e16
-
-    cone_x=car_coordinate[0]+ range_t*math.cos(bearing_t)
-    cone_y=car_coordinate[1]+ range_t*math.sin(bearing_t)
-
-    x_l=landmarks[index][0]
-    y_l= landmarks[index][1]
-    delta_x = (cone_x - x_t)
-    delta_y = (cone_y - y_t)
-    q = delta_x ** 2 + delta_y ** 2
-    range_expected = np.sqrt(q)
-    bearing_expected = np.arctan2(delta_y, delta_x) #- theta_t
-    #print("range=",range_t,range_expected,range_t-range_expected)
-    #print("bearing=",math.degrees(bearing_t),math.degrees(bearing_expected),math.degrees(bearing_t)-math.degrees(bearing_expected))
-    # print("----------------------------------------------------")
-    # print(range_t-range_expected,math.degrees(bearing_t)-math.degrees(bearing_expected))
-    
-    #print("bearing=",bearing_expected,math.degrees(bearing_expected))
-
-    F_x = np.zeros((5, 3 + 2 * (landmark_indexes)))
-    F_x[0][0] = 1.0
-    F_x[1][1] = 1.0
-    F_x[2][2] = 1.0
-    F_x[3][2 * index + 3] = 1.0
-    F_x[4][2 * index + 4] = 1.0
-    H_1 = np.array([-delta_x/np.sqrt(q), -delta_y/np.sqrt(q), 0, delta_x/np.sqrt(q), delta_y/np.sqrt(q)])
-    H_2 = np.array([delta_y/q, -delta_x/q, -1, -delta_y/q, delta_x/q])
-    H_3 = np.array([0, 0, 0, 0, 0])
-    H_f = np.array([H_1, H_2, H_3]).dot(F_x)
-
-    Psi_f = np.dot(np.dot(H_f,PEst),np.transpose(H_f))+ Q
-    difference_f =  np.array([range_t-range_expected,bearing_t-bearing_expected,0])               #  np.array([range_t-range_expected, bearing_t-bearing_expected, 0])
-    # if((math.degrees(bearing_t)-math.degrees(bearing_expected))>2):
-    #    return
-    #print(difference_f[0],difference_f[1])
-    #if(abs(difference_f[0][0])>0.25):
-    update()
-        
-    
-        
+    msg.c=total
+    cov_pub.publish(msg) 
+    update()     
 
 def update():
     """
@@ -275,24 +248,27 @@ def update():
     :param xEst:  nx1 the predicted pose of the system and the pose of the landmarks
     :param PEst:  nxn the predicted covariance
     :param z:     the measurements read at new position
-    :param initP: 2x2 an identity matrix acting as the initial covariance
+    :param initP: 2x2 an identity matrix ac
+    ting as the initial covariance
     :returns:     the updated state and covariance for the system
     """
     global xEst, PEst, H_f,Psi_f, difference_f, landmark_indexes
     
-    
-    K = np.dot(np.dot(PEst,H_f.T),np.linalg.inv(Psi_f))      #PEst.dot(H_f.T).dot(np.linalg.inv(Psi_f)) 
+    ###print("Psi_f=",Psi_f)
+    ###print("det=",np.linalg.det(Psi_f))
+    K = np.dot(np.dot(sigma,H_f.T),np.linalg.inv(Psi_f))      #PEst.dot(H_f.T).dot(np.linalg.inv(Psi_f)) 
     innovation = np.dot(K,difference_f)
     # print("innovation=",innovation[0],innovation[1],innovation[2])
-    if(abs(innovation[0])>1 or abs(innovation)[1]>1 ):
-        return
+    # if(abs(innovation[0])>1 or abs(innovation[1])>1 ):
+    #     return
         
     xEst[0][0]+=innovation[0]*(1)
     xEst[1][0]+=innovation[1]*(1)
     xEst[2][0]+=innovation[2]*(1)
-    
+    # print("before",PEst)
     # Update covariance
-    PEst = (np.identity(3 + 2 * (landmark_indexes)) - np.dot(np.dot(K,H_f),PEst))
+    PEst = np.dot((np.identity(3 + 2 * (landmark_indexes)) - np.dot(K,H_f)),sigma)
+    # print("after=",PEst)
 
     
 
@@ -327,7 +303,7 @@ def update():
     xEst[2][0] = (xEst[2][0] + np.pi) % (2 * np.pi) - np.pi
     '''
 def real(data):
-   
+    
     global car_coordinate , sutta, bt, delta_t, prev_m, prev_s, prev_ns, prev_steer,prev_yaw,p,o
     car_coordinate=[0,0]
     car_coordinate[0]=data.pose.position.x
@@ -347,12 +323,46 @@ def real(data):
     orientation_list = [orientation_q.x, orientation_q.y, orientation_q.z, orientation_q.w]
     (roll, pitch, yaw) = euler_from_quaternion (orientation_list)
     if(o):
+        print("o")
         xEst[0][0]=car_coordinate[0]
         xEst[1][0]=car_coordinate[1]
         xEst[2][0]=yaw
         o=False
+
+
+    
+
+
+def back(da):
+    ###print("data=",da)
+    #print(1)
+    # global cones
+    global xEst,PEst,delta_t, z,num_landmarks, landmarks
+    global car_coordinate , sutta, bt, delta_t, prev_m, prev_s, prev_ns, prev_steer,prev_yaw,p,o
+    l=int(len(da.oned_list)/4)
+    d=(np.array(da.oned_list).reshape((l, 4)))
+    ###print("d=",d)
+    cones=d.tolist()
+    ###print("cones=",cones)
+    z=cones
+    ###print("updating z",z)
+    for i in z:
+        t=True
+        
+        for j in landmarks:
+            d=math.sqrt(((abs(i[1]-j[1]))**2) + ((abs(i[0]-j[0]))**2))
+            if(d<1):
+                t=False
+                break
+        if(t):
+            landmarks.append(i)
+            num_landmarks+=1
+    
+
+    
    
     if(bt and p):
+        print("bt")
         prev_yaw[0]=yaw
         a=datetime.now().time()
         prev_m=a.minute
@@ -366,8 +376,8 @@ def real(data):
     d=(a.microsecond)
     delta_t=(((b-prev_m)*60)+(c-prev_s)+((d-prev_ns)/1000000))
 
-    if(delta_t>0.01 and p):
-        print(2)
+    if(delta_t>0.008 and p):
+       
         u[0]=0.49
         u[1]=yaw-prev_yaw[0]
         prev_yaw[0]=yaw
@@ -375,57 +385,13 @@ def real(data):
         prev_m=b
         prev_s=c
         prev_ns=d
-        print("------------------------------")
+        ###print("++++++++++++++++++++++++++++++++++++++++++")
         ekf_slam()
 
-    
-
-
-def callback(data):
-    
-    print(1)
-    global cones
-    global xEst,PEst,delta_t, z,num_landmarks, landmarks
-    l=int(len(data.oned_list)/4)
-    d=(np.array(data.oned_list).reshape((l, 4)))
-    cones=d.tolist()
-    z=cones
-    for i in z:
-        t=True
-        
-        for j in landmarks:
-            d=math.sqrt(((abs(i[1]-j[1]))**2) + ((abs(i[0]-j[0]))**2))
-            if(d<1):
-                t=False
-                break
-        if(t):
-            landmarks.append(i)
-            num_landmarks+=1
     
     # print(landmarks)
     # print("size=",len(landmarks))
     # print("num=",num_landmarks)
-
-    '''
-    for i in cones:
-        x_coordinate=xEst[0]+i[2]* math.cos(i[3])
-        y_coordinate=xEst[1]+i[2]* math.sin(i[3])
-        print("-----------------------------------------------------------------------------------------------------")
-        print("calculated===",x_coordinate,y_coordinate)
-        print("real=====",i[0],i[1])
-        print("difference==",math.sqrt(((abs(y_coordinate-i[1]))**2) + ((abs(x_coordinate-i[0]))**2)))
-        print("------------------------------------------------------------------------------------------------------")
-    '''
-
-def real_coordinates(data):
-   
-    global num_landmarks,landmarks
-    l=data.leftcone
-    r=data.rightcone
-    landmarks.append(l)
-    landmarks.append(r)
-    num_landmarks+=2
- 
 
 
 def call(data):
@@ -470,38 +436,17 @@ def call(data):
     global p
     p=True
     
-    
-'''
-     
-def c(data):
-    l=data.leftcone
-    r=data.rightcone
-    a=np.array([[l[0]]])
-    b=np.array([[l[1]]])
-    c=np.array([[r[0]]])
-    d=np.array([[r[1]]])
-    #e=xEst
-    #xEst=np.concatenate((e,a,b,c,d),axis=0)
-    #landmark_indexes+=2
-    global xEst
-    e=xEst
-    f=np.concatenate((xEst,a,b,c,d),axis=0)
-    xEst=f
-    #print(f)
-    global landmark_indexes
-    landmark_indexes=landmark_indexes+2
-    #print(landmark_indexes)
 
-'''
 
 if __name__ == '__main__':
     print("Hokuyo LIDAR node started")
     rospy.init_node('rand',anonymous = True)
     
-    rospy.Subscriber("/perception_to_slam",perception,callback)
+    rospy.Subscriber("/perception_to_slam",perception,back)
     rospy.Subscriber("/gt_pose",PoseStamped, real)
     #rospy.Subscriber("/slam_to_distfinder",slam,real_coordinates)
     rospy.Subscriber("/controltoekf", ekf, call)
+    
     #rospy.Subscriber("/slam_to_distfinder",slam,c)
     
     
