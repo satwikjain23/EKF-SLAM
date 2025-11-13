@@ -33,6 +33,8 @@ def call(data):
 		car_coordinate[0]=data.pose.position.x
 		car_coordinate[1]=data.pose.position.y
 		b=False
+	car_coordinate[0]=data.pose.position.x
+	car_coordinate[1]=data.pose.position.y
 
 def callback(data):
 	global min_distance
@@ -118,5 +120,5 @@ if __name__ == '__main__':
 	rospy.init_node('slam',anonymous = True)
 	rospy.Subscriber("/perception_to_slam",perception,callback)
 	rospy.Subscriber("/gt_pose",PoseStamped, call)
-	rospy.Subscriber("/final_coordinates",final_coordinates, c)
+	# rospy.Subscriber("/final_coordinates",final_coordinates, c)
 	rospy.spin()
