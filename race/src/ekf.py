@@ -1,18 +1,62 @@
 #!/usr/bin/env python3
 import rospy
 import math
-import sympy
 import numpy as np
-from nav_msgs.msg import Odometry
+from rosgraph_msgs.msg import Clock
+from race.msg import perception
+from race.msg import ekf
+from race.msg import perception
+from datetime import datetime
+from race.msg import slam
+from geometry_msgs.msg import PoseStamped
+from numpy.linalg import LinAlgError 
+from race.msg import final_coordinates
+from tf.transformations import euler_from_quaternion, quaternion_from_euler
+from race.msg import covariance
 
+
+pub = rospy.Publisher('/final_coordinates', final_coordinates, queue_size=100)
+cov_pub = rospy.Publisher('/covariance_ellipse', covariance, queue_size=1)
 
 
 STATE_SIZE = 3  # State size [x,y,yaw]
-landmark_indexes=0
+prev_m=0
+prev_s=0
+prev_ns=0
+delta_t=0
+bt=True
+cones=[]
+global landmark_indexes
+landmark_indexes=37
 landmarks=[]
+num_landmarks=0
+prev_yaw=[0]
+global u
+u=[0.48,0]
+global z
+z=[]
+global xEst
+global PEst
+prev_steer=0
+steer=0
+p=False
+o=True
+xEst = np.zeros((STATE_SIZE, 1))
+H_f=0
+sigma=[]
+difference_f=0
 
+PEst = 1e-15 * np.full((3 + 2 * landmark_indexes, 3 + 2 * landmark_indexes), 1)
+for i in range(3, 3 + 2 * landmark_indexes):
+    PEst[i][i] = 4              # 1e-15                   #-1
 
-def ekf_slam(xEst, PEst, u, z):
+difference_f=0
+H_f = np.zeros((3, 3 + 2 * landmark_indexes))
+Psi_f = np.zeros((3, 3))
+sutta=[0,0]
+Q = np.diagflat(np.array([0.08, 0.08, 0.08]))**2
+
+def ekf_slam():
     """
     Performs an iteration of EKF SLAM from the available information.
 
@@ -23,76 +67,104 @@ def ekf_slam(xEst, PEst, u, z):
     :returns:    the next estimated position and associated covariance
     """
 
+    global xEst,PEst,z
+    #print("hello")
     # Predict
-    xEst, PEst = predict(xEst, PEst, u)
-    initP = np.eye(2)
-
+    predict()
+    
     # Update
+    print("z",z)
     for measurement in z:
-        H_f,Psi_f,difference_f,K=data_association(xEst,PEst,measurement,z)
-        xEst, PEst = update(xEst, PEst, measurement,H_f,Psi_f,difference_f,K)
-        return xEst, PEst
+        print("===============")
+        #H_f,Psi_f,difference_f,K=data_association(xEst,PEst,measurement,z)
+        data_association(measurement)
+    
+   
+    msg=final_coordinates()
+    msg.x=xEst[0][0]
+    msg.y=xEst[1][0]
+    pub.publish(msg)
+    # print("after")
+    # print(xEst)
 
-def predict(xEst, PEst, u):
+
+    #print("x=",xEst)
+    #print("p=",PEst)
+    
+
+
+
+def predict():
     """
     Performs the prediction step of EKF SLAM
 
     :param xEst: nx1 state vector
     :param PEst: nxn covariance matrix
     :param u:    2x1 control vector
-    :returns:    predicted state vector, predicted covariance, jacobian of control vector, transition fx
     """
+    global xEst,PEst,delta_t, landmark_indexes,sigma
     
-    delta_t=0.01
-    x=xEst[0]+u[0]*np.cos(xEst[2])*delta_t
-    y=xEst[1]+u[0]*np.sin(xEst[2])*delta_t
-    theta=xEst[2]+u[1]*delta_t
-    if (theta > np.pi):
-        theta -= 2 * np.pi
-    elif (theta < -np.pi):
-        theta += 2 * np.pi
+    # print("starting")
+    # print(xEst)
 
-    xEst[0]=x
-    xEst[1]=y
-    xEst[2]=theta
-
-    G = np.identity(3 + 2 * len(landmark_indexes))
-    G[0][2] = - u[0] * delta_t * np.sin(xEst[2])
-    G[1][2] = u[0] * delta_t * np.cos(xEst[2])
-
-    PEst=G.dot(PEst).dot(G.T)
+    #print(PEst)
     
-    #M = np.array([[0.5**2, 0], [0, 0.5**2]])
+    print("------------------------------------------------------------------------")
+    # print("before",xEst)
+    # print(PEst)
+    theta=u[1]+xEst[2][0]
+    xEst[2][0]=theta
+    x=xEst[0][0]+u[0]*np.cos(xEst[2][0])*delta_t
+    y=xEst[1][0]+u[0]*np.sin(xEst[2][0])*delta_t
 
-    #PEst = F.T @ PEst @ F + V @ M @ V.T
-    return xEst, PEst
+    xEst[0][0]=x
+    xEst[1][0]=y
+    # print("after",xEst)
+    
 
-def data_association(xEst,PEst,measurement,z):
+    G = np.identity(3 + 2 * (landmark_indexes))
+    G[0][2] = - u[0] * delta_t * np.sin(xEst[2][0])
+    G[1][2] = u[0] * delta_t * np.cos(xEst[2][0])
+
+    sigma=np.dot(np.dot(G,PEst),(np.transpose(G)))
+   
+
+
+def data_association(measurement):
+    # print("landmarks",landmarks)
+    global  car_coordinate, xEst, PEst,Q,Psi_f,difference_f,H_f,sigma
     # measurement=[x,y,range,bearing]
-
+    print("measurement=",measurement)
     # Get current robot state, measurement
-    x_t=xEst[0]
-    y_t=xEst[1]
-    theta_t=xEst[2]
+    x_t=xEst[0][0]
+    y_t=xEst[1][0]
+    theta_t=xEst[2][0]
     range_t=measurement[2]
     bearing_t=measurement[3]
-
-
+    
     landmark_expected_x=measurement[0]
     landmark_expected_y=measurement[1]
-
+    
+    msg=covariance()
+    total=[]
+    
     min_distance = 1e16
-
-    for i in range(1,landmark_indexes+1):
-
+    count=0
+    c=3
+    print("landmarks=",landmarks)
+    for i in landmarks:
+        count+=1
         # Get current landmark estimate
-        x_l=xEst[2*i+1]
-        y_l= xEst[2*i+2]
+
+        x_l=i[0]
+        y_l=i[1]
+
         delta_x = abs(x_l - x_t)
         delta_y = abs(y_l - y_t)
         q = delta_x ** 2 + delta_y ** 2
         range_expected = np.sqrt(q)
-        bearing_expected = np.arctan2(delta_y, delta_x) - theta_t
+        bearing_expected = np.arctan2(delta_y, delta_x) 
+        # print(bearing_t,bearing_expected)
 
         # Compute Jacobian H of Measurement Model
         # Jacobian: H = d h(x_t, x_l) / d (x_t, x_l)
@@ -106,81 +178,167 @@ def data_association(xEst,PEst,measurement,z):
         # H_low =   delta_y/q   -delta_x/q  -1  -delta_y/q  delta_x/q
         #               0            0       0       0          0
         # H = H_low x F_x
-        F_x = np.zeros((5, 3 + 2 * len(landmark_indexes)))
+        F_x = np.zeros((5, 3 + 2 * (landmark_indexes)))
         F_x[0][0] = 1.0
         F_x[1][1] = 1.0
         F_x[2][2] = 1.0
-        F_x[3][2 * i + 1] = 1.0
-        F_x[4][2 * i + 2] = 1.0
+        F_x[3][2 * count + 1] = 1.0
+        F_x[4][2 * count + 2] = 1.0
         H_1 = np.array([-delta_x/np.sqrt(q), -delta_y/np.sqrt(q), 0, delta_x/np.sqrt(q), delta_y/np.sqrt(q)])
         H_2 = np.array([delta_y/q, -delta_x/q, -1, -delta_y/q, delta_x/q])
         H_3 = np.array([0, 0, 0, 0, 0])
         H = np.array([H_1, H_2, H_3]).dot(F_x)
 
         # Compute Mahalanobis distance
-        Psi = H.dot(PEst).dot(H.T)
-        difference = np.array([range_t - range_expected, bearing_t - bearing_expected, 0])
+        Psi = np.dot(np.dot(H,sigma),np.transpose(H))+ Q
+        # Psi += np.eye(Psi.shape[0]) * 1e-6
+        # difference =  np.array([range_t-range_expected,bearing_t-bearing_expected,0])
+        difference = np.array([range_expected-range_t,bearing_expected-bearing_t, 0])
         Pi = difference.T.dot(np.linalg.inv(Psi)).dot(difference)
-
+        ###print("pi=",Pi)
+        total.append(i[0])
+        total.append(i[1])
+        print("PEst[c][c]",PEst[c][c])
+        print("PEst[c+1][c+1]",PEst[c+1][c+1])
+        total.append(math.sqrt(PEst[c][c]))
+        total.append(math.sqrt(PEst[c+1][c+1]))
+        c+=2
+      
         # Get landmark information with least distance
         if Pi < min_distance:
+            ###print("final=",i)
             min_distance = Pi
             # Values for measurement update
             H_f = H
             Psi_f = Psi
             difference_f = difference
-        
-        return H_f,Psi_f,difference_f,K
 
-def update(xEst, PEst, z, H_f,Psi_f, difference_f,K):
+    msg.c=total
+    cov_pub.publish(msg) 
+    update()     
+
+def update():
     """
     Performs the update step of EKF SLAM
 
     :param xEst:  nx1 the predicted pose of the system and the pose of the landmarks
     :param PEst:  nxn the predicted covariance
     :param z:     the measurements read at new position
-    :param initP: 2x2 an identity matrix acting as the initial covariance
+    :param initP: 2x2 an identity matrix ac
+    ting as the initial covariance
     :returns:     the updated state and covariance for the system
     """
-    K = PEst.dot(H_f.T).dot(np.linalg.inv(Psi_f))
-    innovation = K.dot(difference_f)
-    xEst[0]=xEst[0]+innovation
-    xEst[1]=xEst[1]+innovation
-    xEst[2]=xEst[2]+innovation
+    global xEst, PEst, H_f,Psi_f, difference_f, landmark_indexes
     
+    print("Psi_f=",Psi_f)
+    print("det=",np.linalg.det(Psi_f))
+    K = np.dot(np.dot(sigma,H_f.T),np.linalg.inv(Psi_f))     
+    innovation = np.dot(K,difference_f)
+        
+    xEst[0][0]+=innovation[0]*(1)
+    xEst[1][0]+=innovation[1]*(1)
+    xEst[2][0]+=innovation[2]*(1)
+    # print("before",PEst)
     # Update covariance
-    PEst = (np.identity(3 + 2 * len(landmark_indexes)) - K.dot(H_f)).dot(PEst)
-
-    #xEst[2] = pi_2_pi(xEst[2])
-    return xEst, PEst
+    PEst = np.dot((np.identity(3 + 2 * (landmark_indexes)) - np.dot(K,H_f)),sigma)
+    # print("after=",PEst)
 
 
-def callback(data):
-	global car_coordinate 
-	car_coordinate=[0,0]
-	car_coordinate[0]=data.pose.pose.position.x
-	car_coordinate[1]=data.pose.pose.position.y
-	print("x=",car_coordinate[0])
-	print("y=",car_coordinate[1])
-	
+def real(data):
+    
+    global car_coordinate , sutta, bt, delta_t, prev_m, prev_s, prev_ns, prev_steer,prev_yaw,p,o
+    car_coordinate=[0,0]
+    car_coordinate[0]=data.pose.position.x
+    car_coordinate[1]=data.pose.position.y
+    #print("real coordinates=",car_coordinate)
+ 
+    global roll, pitch, yaw
+    orientation_q = data.pose.orientation
+    orientation_list = [orientation_q.x, orientation_q.y, orientation_q.z, orientation_q.w]
+    (roll, pitch, yaw) = euler_from_quaternion (orientation_list)
+    if(o):
+        print("o")
+        xEst[0][0]=car_coordinate[0]
+        xEst[1][0]=car_coordinate[1]
+        xEst[2][0]=yaw
+        o=False
 
-def start():
-    # State Vector [x y yaw ]
-    xEst = np.zeros((STATE_SIZE, 1))
-    PEst = 1e-6 * np.full((3 + 2 * len(landmark_indexes), 3 + 2 * len(landmark_indexes)), 1)
-    for i in range(3, 3 + 2 * len(landmark_indexes)):
-        PEst[i][i] = 1e6
-    xEst, PEst = ekf_slam(xEst, PEst, u)
 
     
 
 
+def back(da):
+    print("data=",da)
+    #print(1)
+    # global cones
+    global xEst,PEst,delta_t, z,num_landmarks, landmarks
+    global car_coordinate , sutta, bt, delta_t, prev_m, prev_s, prev_ns, prev_steer,prev_yaw,p,o
+    l=int(len(da.oned_list)/4)
+    d=(np.array(da.oned_list).reshape((l, 4)))
+    print("d=",d)
+    cones=d.tolist()
+    print("cones=",cones)
+    z=cones
+    print("updating z",z)
+    for i in z:
+        t=True
+        
+        for j in landmarks:
+            d=math.sqrt(((abs(i[1]-j[1]))**2) + ((abs(i[0]-j[0]))**2))
+            if(d<1):
+                t=False
+                break
+        if(t):
+            landmarks.append(i)
+            num_landmarks+=1
+    
+
+    
+   
+    if(bt and p):
+        print("bt")
+        prev_yaw[0]=yaw
+        a=datetime.now().time()
+        prev_m=a.minute
+        prev_s=a.second
+        prev_ns=a.microsecond
+        bt=False
+
+    a=datetime.now().time()
+    b=(a.minute)
+    c=(a.second)
+    d=(a.microsecond)
+    delta_t=(((b-prev_m)*60)+(c-prev_s)+((d-prev_ns)/1000000))
+
+    if(delta_t>0.008 and p):
+       
+        u[0]=0.49
+        u[1]=yaw-prev_yaw[0]
+        prev_yaw[0]=yaw
+        
+        prev_m=b
+        prev_s=c
+        prev_ns=d
+        print("++++++++++++++++++++++++++++++++++++++++++")
+        ekf_slam()
 
 
+
+def call(data):
+    
+    global p
+    p=True
+    
 
 
 if __name__ == '__main__':
-	print("EKF_SLAM")
-	rospy.init_node('ekf_slam',anonymous = True)
-	
-	rospy.spin()
+    print("Hokuyo LIDAR node started")
+    rospy.init_node('rand',anonymous = True)
+    
+    rospy.Subscriber("/perception_to_slam",perception,back)
+    rospy.Subscriber("/gt_pose",PoseStamped, real)
+    #rospy.Subscriber("/slam_to_distfinder",slam,real_coordinates)
+    rospy.Subscriber("/controltoekf", ekf, call)
+
+    
+    rospy.spin()
