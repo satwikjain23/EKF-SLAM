@@ -5,6 +5,7 @@ This repository contains the EKF-SLAM implementation integrated with the F1TENTH
 
 Developed and tested on ROS Noetic (Ubuntu 20.04).
 
+![ekf](./ekf.gif)
 
 ## Installation
 
